@@ -31,7 +31,7 @@ const Item = ({product, addCartItem, settings, columnCountOnMobile, columnCountO
           <ItemImage images={product.images} productName={product.name} height={placeholderHeight} />
         </figure>
         <div className="content product-caption">
-          <div className="product-name">{product.name}</div>
+          <div className="product-name">{product.meta_title +' (' + product.packaging + ')'}</div>
           <ItemPrice product={product} settings={settings} />
         </div>
       </NavLink>

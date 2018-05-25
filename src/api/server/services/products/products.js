@@ -234,7 +234,6 @@ class ProductsService {
 
 
   getProjectQuery(fieldsArray) {
-    console.log('gege');
     let salePrice = "$sale_price";
     let regularPrice = "$regular_price";
     let costPrice = "$cost_price";
@@ -275,6 +274,7 @@ class ProductsService {
       stock_preorder: 1,
       stock_backorder: 1,
       stock_quantity: 1,
+      packaging: 1,
     	on_sale: {
     		$and: [
     			{
@@ -620,6 +620,7 @@ class ProductsService {
     product.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
     product.category_id = parse.getObjectIDIfValid(data.category_id);
     product.category_ids = parse.getArrayOfObjectID(data.category_ids);
+    product.packaging = parse.getString(data.packaging);
 
     if(data.dimensions) {
       product.dimensions = data.dimensions;
