@@ -234,6 +234,7 @@ class ProductsService {
 
 
   getProjectQuery(fieldsArray) {
+    console.log('gege');
     let salePrice = "$sale_price";
     let regularPrice = "$regular_price";
     let costPrice = "$cost_price";
