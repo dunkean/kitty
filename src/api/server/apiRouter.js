@@ -4,6 +4,8 @@ const express = require('express');
 const apiRouter = express.Router();
 
 const ProductsRoute = require('./routes/products');
+const StoresRoute = require('./routes/stores');
+const BrandsRoute = require('./routes/brands');
 const ProductCategoriesRoute = require('./routes/productCategories');
 const SitemapRoute = require('./routes/sitemap');
 const ThemeRoute = require('./routes/theme');
@@ -24,6 +26,8 @@ const AppsRoute = require('./routes/apps');
 const WebhooksRoute = require('./routes/webhooks');
 
 new ProductsRoute(apiRouter);
+new StoresRoute(apiRouter);
+new BrandsRoute(apiRouter);
 new ProductCategoriesRoute(apiRouter);
 new SitemapRoute(apiRouter);
 new ThemeRoute(apiRouter);

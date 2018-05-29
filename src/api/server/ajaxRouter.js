@@ -14,6 +14,8 @@ const api = new CezerinClient({
 
 const DEFAULT_CACHE_CONTROL = 'public, max-age=60';
 const PRODUCTS_CACHE_CONTROL = 'public, max-age=60';
+const BRANDS_CACHE_CONTROL = 'public, max-age=60';
+const STORES_CACHE_CONTROL = 'public, max-age=60';
 const PRODUCT_DETAILS_CACHE_CONTROL = 'public, max-age=60';
 
 const getCartCookieOptions = isHttps => ({
@@ -86,6 +88,18 @@ ajaxRouter.get('/products', (req, res, next) => {
   filter.enabled = true;
   api.products.list(filter).then(({status, json}) => {
     res.status(status).header('Cache-Control', PRODUCTS_CACHE_CONTROL).send(json);
+  })
+})
+
+ajaxRouter.get('/stores', (req, res, next) => {
+  api.stores.list().then(({status, json}) => {
+    res.status(status).header('Cache-Control', STORES_CACHE_CONTROL).send(json);
+  })
+})
+
+ajaxRouter.get('/brands', (req, res, next) => {
+  api.brands.list().then(({status, json}) => {
+    res.status(status).header('Cache-Control', BRANDS_CACHE_CONTROL).send(json);
   })
 })
 

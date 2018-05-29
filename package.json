@@ -47,10 +47,10 @@
     "start-api": "node src/api/server/index.js",
     "start-store": "node dist/store/server/index.js",
     "start": "npm run start-api & npm run start-store",
-  	"win-start-api": "mode con:cols=40 lines=20 && node src/api/server/index.js",
-  	"win-theme:watch": "mode con:cols=60 lines=20 && babel theme/src -d theme/dist --watch",
+    "win-start-api": "mode con:cols=40 lines=20 && node src/api/server/index.js",
+    "win-theme:watch": "mode con:cols=60 lines=20 && babel theme/src -d theme/dist --watch",
     "win-store:watch": "mode con:cols=60 lines=20 && babel src/store -d dist/store --watch",
-  	"win-webpack:store:watch": "mode con:cols=60 lines=30 && webpack --config webpack.config.store.js --mode development --watch"
+    "win-webpack:store:watch": "mode con:cols=60 lines=30 && webpack --config webpack.config.store.js --mode development --watch"
   },
   "dependencies": {
     "babel-cli": "^6.26.0",
@@ -83,6 +83,7 @@
     "node-sass": "^4.8.3",
     "nodemailer": "^4.6.3",
     "nodemailer-smtp-transport": "^2.7.4",
+    "pretty-checkbox": "^3.0.3",
     "query-string": "^5.1.1",
     "react": "^16.2.0",
     "react-chartjs-2": "^2.7.0",
