@@ -1,923 +1,294 @@
 'use strict';
 
 const path = require('path');
-const { URL } = require('url');
+const url = require('url');
+const formidable = require('formidable');
 const fse = require('fs-extra');
 const ObjectID = require('mongodb').ObjectID;
 const settings = require('../../lib/settings');
+const SettingsService = require('../settings/settings');
 const mongo = require('../../lib/mongo');
 const utils = require('../../lib/utils');
 const parse = require('../../lib/parse');
-const CategoriesService = require('./storeCategories');
-const SettingsService = require('../settings/settings');
+
+
+/*
+this.router.get('/v1/stores', security.checkUserScope.bind(this, security.scope.READ_STORES), this.getStores.bind(this));
+this.router.post('/v1/stores', security.checkUserScope.bind(this, security.scope.WRITE_STORES), this.addStore.bind(this));
+this.router.get('/v1/stores/:id', security.checkUserScope.bind(this, security.scope.READ_STORES), this.getSingleStore.bind(this));
+this.router.put('/v1/stores/:id', security.checkUserScope.bind(this, security.scope.WRITE_STORES), this.updateStore.bind(this));
+this.router.delete('/v1/stores/:id', security.checkUserScope.bind(this, security.scope.WRITE_STORES), this.deleteStore.bind(this));
+this.router.post('/v1/stores/:id/image', security.checkUserScope.bind(this, security.scope.WRITE_STORES), this.uploadStoreImage.bind(this));
+this.router.delete('/v1/stores/:id/image', security.checkUserScope.bind(this, security.scope.WRITE_STORES), this.deleteStoreImage.bind(this));
+*/
+/*{
+    "_id" : ObjectId("5b082aaf455fe936f1aac16c"),
+    "date_created" : ISODate("2018-05-25T15:24:31.151Z"),
+    "date_updated" : null,
+    "name" : "Chien",
+    "description" : "Description of the store Chien which is a store !",
+    "meta_description" : "The store Chien deals with Chien stuff.",
+    "meta_title" : "Chien",
+    "enabled" : true,
+    "position": number,
+    "slug" : "chien"
+    "image" : "",
+    "position" : 1165,
+    site_url
+    product_count
+}*/
 
 class StoresService {
   constructor() {}
 
+  getFilter(params = {}) {
+    let filter = {};
+    const enabled = parse.getBooleanIfValid(params.enabled);
+    if (enabled !== null) {
+      filter.enabled = enabled;
+    }
+    const id = parse.getObjectIDIfValid(params.id);
+    if (id) {
+      filter._id = id;
+    }
+    return filter;
+  }
+
   async getStores(params = {}) {
-    const categories = await CategoriesService.getCategories({ fields: 'parent_id' });
-    const fieldsArray = this.getArrayFromCSV(params.fields);
-    const limit = parse.getNumberIfPositive(params.limit) || 1000;
-    const offset = parse.getNumberIfPositive(params.offset) || 0;
-    const projectQuery = this.getProjectQuery(fieldsArray);
-    const sortQuery = this.getSortQuery(params); // todo: validate every sort field
-    const matchQuery = this.getMatchQuery(params, categories);
-    const matchTextQuery = this.getMatchTextQuery(params);
-    const itemsAggregation = [];
-
-    // $match with $text is only allowed as the first pipeline stage"
-    if(matchTextQuery) {
-      itemsAggregation.push({ $match: matchTextQuery });
-    }
-    itemsAggregation.push({ $project: projectQuery });
-    itemsAggregation.push({ $match: matchQuery });
-    if(sortQuery){
-      itemsAggregation.push({ $sort: sortQuery });
-    }
-    itemsAggregation.push({ $skip : offset });
-    itemsAggregation.push({ $limit : limit });
-    itemsAggregation.push({ $lookup: {
-      from: 'storeCategories',
-      localField: 'category_id',
-      foreignField: '_id',
-      as: 'categories'
-    }});
-    itemsAggregation.push({ $project: {
-      "categories.description": 0,
-      "categories.meta_description": 0,
-      "categories._id": 0,
-      "categories.date_created": 0,
-      "categories.date_updated": 0,
-      "categories.image": 0,
-      "categories.meta_title": 0,
-      "categories.enabled": 0,
-      "categories.sort": 0,
-      "categories.parent_id": 0,
-      "categories.position": 0
-    }});
-
-    const [itemsResult, countResult, minMaxPriceResult, allAttributesResult, attributesResult, generalSettings] = await Promise.all([
-      mongo.db.collection('stores').aggregate(itemsAggregation).toArray(),
-      this.getCountIfNeeded(params, matchQuery, matchTextQuery, projectQuery),
-      this.getMinMaxPriceIfNeeded(params, categories, matchTextQuery, projectQuery),
-      this.getAllAttributesIfNeeded(params, categories, matchTextQuery, projectQuery),
-      this.getAttributesIfNeeded(params, categories, matchTextQuery, projectQuery),
-      SettingsService.getSettings()
-    ]);
-
-    const domain = generalSettings.domain || '';
-    const ids = this.getArrayFromCSV(parse.getString(params.ids));
-    const sku = this.getArrayFromCSV(parse.getString(params.sku));
-
-    let items = itemsResult.map(item => this.changeProperties(item, domain));
-    items = this.sortItemsByArrayOfIdsIfNeed(items, ids, sortQuery);
-    items = this.sortItemsByArrayOfSkuIfNeed(items, sku, sortQuery);
-    items = items.filter(item => !!item);
-
-    let total_count = 0;
-    let min_price = 0;
-    let max_price = 0;
-
-    if(countResult && countResult.length === 1) {
-      total_count = countResult[0].count;
-    }
-
-    if(minMaxPriceResult && minMaxPriceResult.length === 1) {
-      min_price = minMaxPriceResult[0].min_price || 0;
-      max_price = minMaxPriceResult[0].max_price || 0;
-    }
-
-    let attributes = [];
-    if(allAttributesResult) {
-      attributes = this.getOrganizedAttributes(allAttributesResult, attributesResult, params);
-    }
-
-    return {
-      price: {
-        min: min_price,
-        max: max_price
-      },
-      attributes: attributes,
-      total_count: total_count,
-      has_more: (offset + items.length) < total_count,
-      data: items
-    }
-  }
-
-  sortItemsByArrayOfIdsIfNeed(items, arrayOfIds, sortQuery) {
-    return arrayOfIds && arrayOfIds.length > 0 && sortQuery === null && items && items.length > 0
-      ? arrayOfIds.map(id => items.find(item => item.id === id))
-      : items;
-  }
-
-  sortItemsByArrayOfSkuIfNeed(items, arrayOfSku, sortQuery) {
-    return arrayOfSku && arrayOfSku.length > 0 && sortQuery === null && items && items.length > 0
-      ? arrayOfSku.map(sku => items.find(item => item.sku === sku))
-      : items;
-  }
-
-  getOrganizedAttributes(allAttributesResult, filteredAttributesResult, params) {
-    const uniqueAttributesName = [...new Set(allAttributesResult.map(a => a._id.name))];
-
-    return uniqueAttributesName
-    .sort()
-    .map(attributeName => ({
-        name: attributeName,
-        values: allAttributesResult
-          .filter(b => b._id.name === attributeName)
-          .sort((a,b) => (a._id.value > b._id.value) ? 1 : ((b._id.value > a._id.value) ? -1 : 0))
-          .map(b => ({
-            name:b._id.value,
-            checked: params[`attributes.${b._id.name}`] && params[`attributes.${b._id.name}`].includes(b._id.value) ? true : false,
-            // total: b.count,
-            count: this.getAttributeCount(filteredAttributesResult, b._id.name, b._id.value)
-            })
-          )
-      })
-    )
-  }
-
-  getAttributeCount(attributesArray, attributeName, attributeValue) {
-    const attribute = attributesArray.find(a => a._id.name === attributeName && a._id.value === attributeValue);
-    return attribute ? attribute.count : 0;
-  }
-
-  getCountIfNeeded(params, matchQuery, matchTextQuery, projectQuery) {
-    // get total count
-    // not for store details or ids
-    if(!params.ids) {
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: matchQuery });
-      aggregation.push({ $group: {_id: null, count: { $sum: 1 } }});
-      return mongo.db.collection('stores').aggregate(aggregation).toArray();
-    } else {
-      return null;
-    }
-  }
-
-  getMinMaxPriceIfNeeded(params, categories, matchTextQuery, projectQuery) {
-    // get min max price without filter by price
-    // not for store details or ids
-    if(!params.ids) {
-      const minMaxPriceMatchQuery = this.getMatchQuery(params, categories, false, false);
-
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: minMaxPriceMatchQuery });
-      aggregation.push({ $group: {_id: null, min_price: { $min: "$price" }, max_price: { $max: "$price" }}});
-      return mongo.db.collection('stores').aggregate(aggregation).toArray();
-    } else {
-      return null;
-    }
-  }
-
-  getAllAttributesIfNeeded(params, categories, matchTextQuery, projectQuery) {
-    // get attributes with counts without filter by attributes
-    // only for category
-    if(params.category_id) {
-      const attributesMatchQuery = this.getMatchQuery(params, categories, false, false);
-
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: attributesMatchQuery });
-      aggregation.push({ "$unwind" : "$attributes" });
-      aggregation.push({ "$group" : { "_id" : "$attributes", count : { "$sum" : 1 } } });
-      return mongo.db.collection('stores').aggregate(aggregation).toArray();
-    } else {
-      return null
-    }
-  }
-
-  getAttributesIfNeeded(params, categories, matchTextQuery, projectQuery) {
-    // get attributes with counts without filter by attributes
-    // only for category
-    if(params.category_id) {
-      const attributesMatchQuery = this.getMatchQuery(params, categories, false, true);
-
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: attributesMatchQuery });
-      aggregation.push({ "$unwind" : "$attributes" });
-      aggregation.push({ "$group" : { "_id" : "$attributes", count : { "$sum" : 1 } } });
-      return mongo.db.collection('stores').aggregate(aggregation).toArray();
-    } else {
-      return null
-    }
-  }
-
-  getSortQuery({ sort, search }) {
-    const isSearchUsed = search && search.length > 0 && search !== 'null' && search !== 'undefined';
-    if(sort === "search" && isSearchUsed) {
-      return { score: { $meta: "textScore" } }
-    } else if(sort && sort.length > 0) {
-      const fields = sort.split(',');
-      return Object.assign(...fields.map(field => (
-      	{[field.startsWith('-') ? field.slice(1) : field]: field.startsWith('-') ? -1 : 1}
-      )))
-    } else {
-      return null
-    }
-  }
-
-
-  getProjectQuery(fieldsArray) {
-    let salePrice = "$sale_price";
-    let regularPrice = "$regular_price";
-    let costPrice = "$cost_price";
-
-    let project =
-    {
-      category_ids: 1,
-      related_store_ids: 1,
-      enabled: 1,
-      discontinued: 1,
-      date_created: 1,
-      date_updated: 1,
-      cost_price: costPrice,
-      regular_price: regularPrice,
-      sale_price: salePrice,
-      date_sale_from: 1,
-      date_sale_to: 1,
-      images: 1,
-      prices: 1,
-      quantity_inc: 1,
-      quantity_min: 1,
-      meta_description: 1,
-      meta_title: 1,
-      name: 1,
-      description: 1,
-      sku: 1,
-      code: 1,
-      tax_class: 1,
-      position: 1,
-      tags: 1,
-      options: 1,
-      variants: 1,
-      weight: 1,
-      dimensions: 1,
-      attributes: 1,
-      date_stock_expected: 1,
-      stock_tracking: 1,
-      stock_preorder: 1,
-      stock_backorder: 1,
-      stock_quantity: 1,
-      packaging: 1,
-    	on_sale: {
-    		$and: [
-    			{
-    				$lt: [new Date(), "$date_sale_to"]
-    			}, {
-    				$gt: [new Date(), "$date_sale_from"]
-    			}
-    		]
-    	},
-    	variable: {
-    		$gt: [
-    			{
-            $size: { "$ifNull": [ "$variants", [] ] }
-    			},
-    			0
-    		]
-    	},
-    	price: {
-    		$cond: {
-    			if: {
-    				$and: [
-    					{
-    						$lt: [new Date(), "$date_sale_to"]
-    					}, {
-    						$gt: [new Date(), "$date_sale_from"]
-    					}, {
-    						$gt: ["$sale_price", 0]
-    					}
-    				]
-    			},
-    			then: salePrice,
-    			else: regularPrice,
-    	}
-    	},
-    	stock_status: {
-    		$cond: {
-    			if: {
-    				$eq: ["$discontinued", true]
-    			},
-    			then: "discontinued",
-    			else : {
-    					$cond: {
-    						if: {
-    							$gt: ["$stock_quantity", 0]
-    						},
-    						then: "available",
-    						else : {
-    								$cond: {
-    									if: {
-    										$eq: ["$stock_backorder", true]
-    									},
-    									then: "backorder",
-    									else : {
-    											$cond: {
-    												if: {
-    													$eq: ["$stock_preorder", true]
-    												},
-    												then: "preorder",
-    												else : "out_of_stock"
-    										}
-    										}
-    									}
-    							}
-    						}
-    				}
-    			}
-    	},
-      url: { "$literal" : "" },
-      path: { "$literal" : "" },
-      category_name: { "$literal" : "" },
-      category_slug: { "$literal" : "" }
-    };
-
-    if(fieldsArray && fieldsArray.length > 0) {
-      project = this.getProjectFilteredByFields(project, fieldsArray);
-    }
-
-    // required fields
-    project._id = 0;
-    project.id = "$_id";
-    project.category_id = 1;
-    project.slug = 1;
-
-    return project;
-  }
-
-  getArrayFromCSV(fields) {
-    return (fields && fields.length > 0) ? fields.split(',') : [];
-  }
-
-  getProjectFilteredByFields(project, fieldsArray) {
-    return Object.assign(...fieldsArray.map(key => ({[key]: project[key]}) ));
-  }
-
-  getMatchTextQuery({search}) {
-    if (search && search.length > 0 && search !== 'null' && search !== 'undefined') {
-      return {
-        '$or': [
-          { sku: new RegExp(search, 'i') },
-          { '$text': { '$search': search } }
-        ]
-      }
-    } else {
-      return null;
-    }
-  }
-
-  getMatchAttributesQuery(params) {
-    let attributesArray = Object.keys(params)
-    .filter(paramName => paramName.startsWith('attributes.'))
-    .map(paramName => {
-        const paramValue = params[paramName];
-        const paramValueArray = Array.isArray(paramValue) ? paramValue : [paramValue];
-
-        return {
-          name: paramName.replace('attributes.', ''),
-          values: paramValueArray
-        }
-    });
-
-    return attributesArray;
-  }
-
-  getMatchQuery(params, categories, useAttributes = true, usePrice = true) {
-    let {
-      category_id,
-      enabled,
-      discontinued,
-      on_sale,
-      stock_status,
-      price_from,
-      price_to,
-      sku,
-      ids,
-      tags
-    } = params;
-
-     // parse values
-     category_id = parse.getObjectIDIfValid(category_id);
-     enabled = parse.getBooleanIfValid(enabled);
-     discontinued = parse.getBooleanIfValid(discontinued);
-     on_sale = parse.getBooleanIfValid(on_sale);
-     price_from = parse.getNumberIfPositive(price_from);
-     price_to = parse.getNumberIfPositive(price_to);
-     ids = parse.getString(ids);
-     tags = parse.getString(tags);
-
-     let queries = [];
-     const currentDate = new Date();
-
-     if(category_id !== null) {
-       let categoryChildren = [];
-       CategoriesService.findAllChildren(categories, category_id, categoryChildren);
-       queries.push({
-         '$or': [
-           {
-             category_id: { $in: categoryChildren }
-           }, {
-             category_ids: category_id
-           }
-         ]
-       });
-     }
-
-     if(enabled !== null) {
-       queries.push({
-         enabled: enabled
-       });
-     }
-
-     if(discontinued !== null) {
-       queries.push({
-         discontinued: discontinued
-       });
-     }
-
-     if(on_sale !== null) {
-       queries.push({
-         on_sale: on_sale
-       });
-     }
-
-     if(usePrice){
-       if(price_from !== null && price_from > 0) {
-         queries.push({
-           price: { $gte: price_from }
-         });
-       }
-
-       if(price_to !== null && price_to > 0) {
-         queries.push({
-           price: { $lte: price_to }
-         });
-       }
-     }
-
-     if(stock_status && stock_status.length > 0) {
-       queries.push({
-         stock_status: stock_status
-       });
-     }
-
-     if(ids && ids.length > 0) {
-       const idsArray = ids.split(',');
-       let objectIDs = [];
-       for(const id of idsArray) {
-         if(ObjectID.isValid(id)) {
-           objectIDs.push(new ObjectID(id));
-         }
-       }
-       queries.push({
-         id: { $in: objectIDs }
-       });
-     }
-
-     if(sku && sku.length > 0) {
-       if(sku.includes(',')){
-         // multiple values
-         const skus = sku.split(',');
-         queries.push({
-           sku: { $in: skus }
-         });
-       } else {
-         // single value
-         queries.push({
-           sku: sku
-         });
-       }
-     }
-
-     if (tags && tags.length > 0) {
-       queries.push({
-         tags: tags
-       });
-     }
-
-     if(useAttributes){
-       const attributesArray = this.getMatchAttributesQuery(params);
-       if(attributesArray && attributesArray.length > 0) {
-         const matchesArray = attributesArray.map(attribute => ({ $elemMatch : { "name" : attribute.name, "value" : { "$in": attribute.values } } }))
-         queries.push({
-           "attributes": { "$all": matchesArray }
-         });
-       }
-     }
-
-
-     let matchQuery = {};
-     if(queries.length === 1) {
-       matchQuery = queries[0];
-     } else if(queries.length > 1) {
-       matchQuery = {
-        $and: queries
-       }
-     }
-
-     return matchQuery;
+    const filter = this.getFilter(params);
+    const projection = utils.getProjectionFromFields(params.fields);
+    const generalSettings = await SettingsService.getSettings();
+    const domain = generalSettings.domain;
+    const items = await mongo.db.collection('stores').find(filter, { projection: projection }).sort({position: 1}).toArray();
+    const result = items.map(store => this.changeProperties(store, domain));
+    return result;
   }
 
   getSingleStore(id) {
-    if(!ObjectID.isValid(id)) {
+    if (!ObjectID.isValid(id)) {
       return Promise.reject('Invalid identifier');
     }
-    return this.getStores({ ids: id, limit: 1})
-    .then(stores => stores.data.length > 0 ? stores.data[0] : {})
+    return this.getStores({id: id}).then(stores => {
+      return stores.length > 0
+        ? stores[0]
+        : null;
+    })
   }
 
-  addStore(data) {
-    return this.getValidDocumentForInsert(data)
-    .then(dataToInsert => mongo.db.collection('stores').insertMany([dataToInsert]))
-    .then(res => this.getSingleStore(res.ops[0]._id.toString()))
+  async addStore(data) {
+    const lastStore = await mongo.db.collection('stores').findOne({}, { sort: {position: -1} });
+    const newPosition = (lastStore && lastStore.position > 0) ? lastStore.position + 1 : 1;
+    const dataToInsert = await this.getValidDocumentForInsert(data, newPosition);
+    const insertResult = await mongo.db.collection('stores').insertMany([dataToInsert]);
+    return this.getSingleStore(insertResult.ops[0]._id.toString());
   }
 
   updateStore(id, data) {
     if(!ObjectID.isValid(id)) {
       return Promise.reject('Invalid identifier');
     }
-    const storeObjectID = new ObjectID(id);
+    let storeObjectID = new ObjectID(id);
 
     return this.getValidDocumentForUpdate(id, data)
-    .then(dataToSet => mongo.db.collection('stores').updateOne({ _id: storeObjectID }, {$set: dataToSet}))
-    .then(res => res.modifiedCount > 0 ? this.getSingleStore(id) : null)
+      .then(dataToSet => mongo.db.collection('stores').updateOne({ _id: storeObjectID }, {$set: dataToSet}))
+      .then(res => res.modifiedCount > 0 ? this.getSingleStore(id) : null)
   }
 
-  deleteStore(storeId) {
-    if(!ObjectID.isValid(storeId)) {
+  deleteStore(id) {
+    if(!ObjectID.isValid(id)) {
       return Promise.reject('Invalid identifier');
     }
-    const storeObjectID = new ObjectID(storeId);
-    // 1. delete Store
-    return mongo.db.collection('stores').deleteOne({'_id': storeObjectID})
-    .then(deleteResponse => {
-      if(deleteResponse.deletedCount > 0) {
-        // 2. delete directory with images
-        let deleteDir = path.resolve(settings.storesUploadPath + '/' + storeId);
-        fse.remove(deleteDir, err => {});
+    // 1. get all stores
+    return this.getStores()
+    .then(idsToDelete => {
+      // 3. delete stores
+      let objectsToDelete = idsToDelete.map((id) => ( new ObjectID(id) ));
+      // return mongo.db.collection('stores').deleteMany({_id: { $in: objectsToDelete}}).then(() => idsToDelete);
+      return mongo.db.collection('stores').deleteMany({_id: { $in: objectsToDelete}}).then(deleteResponse => deleteResponse.deletedCount > 0 ? idsToDelete : null);
+    })
+    .then(idsToDelete => {
+      // 4. update store_id for products
+      return idsToDelete ? mongo.db.collection('products').updateMany({ store_id: { $in: idsToDelete}}, { $set: { store_id: null }}).then(() => idsToDelete) : null;
+    })
+    .then(idsToDelete => {
+      // 5. delete directories with images
+      if(idsToDelete) {
+        for(let storeId of idsToDelete) {
+          let deleteDir = path.resolve(settings.storesUploadPath + '/' + storeId);
+          fse.remove(deleteDir, err => {});
+        }
+        return Promise.resolve(true);
+      } else {
+        return Promise.resolve(false);
       }
-      return deleteResponse.deletedCount > 0;
     });
   }
 
-  getValidDocumentForInsert(data) {
-    //  Allow empty store to create draft
-
-    let store = {
-      'date_created': new Date(),
-      'date_updated': null,
-      'images': [],
-      'dimensions': {
-          'length': 0,
-          'width': 0,
-          'height': 0
-      }
-    };
-
-    store.name = parse.getString(data.name);
-    store.description = parse.getString(data.description);
-    store.meta_description = parse.getString(data.meta_description);
-    store.meta_title = parse.getString(data.meta_title);
-    store.tags = parse.getArrayIfValid(data.tags) || [];
-    store.attributes = this.getValidAttributesArray(data.attributes);
-    store.enabled = parse.getBooleanIfValid(data.enabled, true);
-    store.discontinued = parse.getBooleanIfValid(data.discontinued, false);
-    store.slug = parse.getString(data.slug);
-    store.sku = parse.getString(data.sku);
-    store.code = parse.getString(data.code);
-    store.tax_class = parse.getString(data.tax_class);
-    store.related_store_ids = this.getArrayOfObjectID(data.related_store_ids);
-    store.prices = parse.getArrayIfValid(data.prices) || [];
-    store.cost_price = parse.getNumberIfPositive(data.cost_price) || 0;
-    store.regular_price = parse.getNumberIfPositive(data.regular_price) || 0;
-    store.sale_price = parse.getNumberIfPositive(data.sale_price) || 0;
-    store.quantity_inc = parse.getNumberIfPositive(data.quantity_inc) || 1;
-    store.quantity_min = parse.getNumberIfPositive(data.quantity_min) || 1;
-    store.weight = parse.getNumberIfPositive(data.weight) || 0;
-    store.stock_quantity = parse.getNumberIfPositive(data.stock_quantity) || 0;
-    store.position = parse.getNumberIfValid(data.position);
-    store.date_stock_expected = parse.getDateIfValid(data.date_stock_expected);
-    store.date_sale_from = parse.getDateIfValid(data.date_sale_from);
-    store.date_sale_to = parse.getDateIfValid(data.date_sale_to);
-    store.stock_tracking = parse.getBooleanIfValid(data.stock_tracking, false);
-    store.stock_preorder = parse.getBooleanIfValid(data.stock_preorder, false);
-    store.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
-    store.category_id = parse.getObjectIDIfValid(data.category_id);
-    store.category_ids = parse.getArrayOfObjectID(data.category_ids);
-    store.packaging = parse.getString(data.packaging);
-
-    if(data.dimensions) {
-      store.dimensions = data.dimensions;
-    }
-
-    if(store.slug.length === 0) {
-      store.slug = store.name;
-    }
-
-    return this.setAvailableSlug(store).then(store => this.setAvailableSku(store));
+  getErrorMessage(err) {
+    return { 'error': true, 'message': err.toString() };
   }
+
+  getValidDocumentForInsert(data, newPosition) {
+      //  Allow empty store to create draft
+
+      let store = {
+        'date_created': new Date(),
+        'date_updated': null,
+        'image': ''
+      };
+
+      store.name = parse.getString(data.name);
+      store.description = parse.getString(data.description);
+      store.meta_description = parse.getString(data.meta_description);
+      store.meta_title = parse.getString(data.meta_title);
+      store.enabled = parse.getBooleanIfValid(data.enabled, true);
+      store.sort = parse.getString(data.sort);
+      store.parent_id = parse.getObjectIDIfValid(data.parent_id);
+      store.position = parse.getNumberIfValid(data.position) || newPosition;
+      store.site_url = parse.getUrlIfValid(data.site_url);
+      let slug = (!data.slug || data.slug.length === 0) ? data.name : data.slug;
+      if(!slug || slug.length === 0) {
+        return Promise.resolve(store);
+      } else {
+        return utils.getAvailableSlug(slug).then(newSlug => {
+          store.slug = newSlug;
+          return store;
+        });
+      }
+  }
+
 
   getValidDocumentForUpdate(id, data) {
-    if (Object.keys(data).length === 0) {
-      throw new Error('Required fields are missing');
-    }
-
-    let store = {
-      'date_updated': new Date()
-    }
-
-    if(data.name !== undefined) {
-      store.name = parse.getString(data.name);
-    }
-
-    if(data.description !== undefined) {
-      store.description = parse.getString(data.description);
-    }
-
-    if(data.meta_description !== undefined) {
-      store.meta_description = parse.getString(data.meta_description);
-    }
-
-    if(data.meta_title !== undefined) {
-      store.meta_title = parse.getString(data.meta_title);
-    }
-
-    if(data.tags !== undefined) {
-      store.tags = parse.getArrayIfValid(data.tags) || [];
-    }
-
-    if(data.attributes !== undefined) {
-      store.attributes = this.getValidAttributesArray(data.attributes);
-    }
-
-    if(data.dimensions !== undefined) {
-      store.dimensions = data.dimensions;
-    }
-
-    if(data.enabled !== undefined) {
-      store.enabled = parse.getBooleanIfValid(data.enabled, true);
-    }
-
-    if(data.discontinued !== undefined) {
-      store.discontinued = parse.getBooleanIfValid(data.discontinued, false);
-    }
-
-    if(data.slug !== undefined) {
-      if(data.slug === '' && store.name && store.name.length > 0) {
-        store.slug = store.name;
-      } else {
-        store.slug = parse.getString(data.slug);
+    return new Promise((resolve, reject) => {
+      if(!ObjectID.isValid(id)) {
+        reject('Invalid identifier');
       }
-    }
+      if (Object.keys(data).length === 0) {
+        reject('Required fields are missing');
+      }
 
-    if(data.sku !== undefined) {
-      store.sku = parse.getString(data.sku);
-    }
+      let store = {
+        'date_updated': new Date()
+      };
 
-    if(data.code !== undefined) {
-      store.code = parse.getString(data.code);
-    }
+      if(data.name !== undefined) {
+        store.name = parse.getString(data.name);
+      }
 
-    if(data.tax_class !== undefined) {
-      store.tax_class = parse.getString(data.tax_class);
-    }
+      if(data.description !== undefined) {
+        store.description = parse.getString(data.description);
+      }
 
-    if(data.related_store_ids !== undefined) {
-      store.related_store_ids = this.getArrayOfObjectID(data.related_store_ids);
-    }
+      if(data.meta_description !== undefined) {
+        store.meta_description = parse.getString(data.meta_description);
+      }
 
-    if(data.prices !== undefined) {
-      store.prices = parse.getArrayIfValid(data.prices) || [];
-    }
+      if(data.meta_title !== undefined) {
+        store.meta_title = parse.getString(data.meta_title);
+      }
 
-    if(data.cost_price !== undefined) {
-      store.cost_price = parse.getNumberIfPositive(data.cost_price) || 0;
-    }
+      if(data.site_url !== undefined) {
+        store.site_url = parse.getUrlIfValid(data.site_url);
+      }
 
-    if(data.regular_price !== undefined) {
-      store.regular_price = parse.getNumberIfPositive(data.regular_price) || 0;
-    }
+      if(data.enabled !== undefined) {
+        store.enabled = parse.getBooleanIfValid(data.enabled, true);
+      }
 
-    if(data.sale_price !== undefined) {
-      store.sale_price = parse.getNumberIfPositive(data.sale_price) || 0;
-    }
+      if(data.image !== undefined) {
+        store.image = data.image;
+      }
 
-    if(data.quantity_inc !== undefined) {
-      store.quantity_inc = parse.getNumberIfPositive(data.quantity_inc) || 1;
-    }
+      if(data.position >= 0) {
+        store.position = data.position;
+      }
 
-    if(data.quantity_min !== undefined) {
-      store.quantity_min = parse.getNumberIfPositive(data.quantity_min) || 1;
-    }
+      if(data.sort !== undefined) {
+        store.sort = data.sort;
+      }
 
-    if(data.weight !== undefined) {
-      store.weight = parse.getNumberIfPositive(data.weight) || 0;
-    }
+      if(data.slug !== undefined){
+        let slug = data.slug;
+        if(!slug || slug.length === 0) {
+          slug = data.name;
+        }
 
-    if(data.stock_quantity !== undefined) {
-      store.stock_quantity = parse.getNumberIfPositive(data.stock_quantity) || 0;
-    }
+        utils.getAvailableSlug(slug, id)
+        .then((newSlug) => {
+          store.slug = newSlug;
+          resolve(store);
+        })
+        .catch((err) => {
+          reject(err);
+        });
 
-    if(data.position !== undefined) {
-      store.position = parse.getNumberIfValid(data.position);
-    }
-
-    if(data.date_stock_expected !== undefined) {
-      store.date_stock_expected = parse.getDateIfValid(data.date_stock_expected);
-    }
-
-    if(data.date_sale_from !== undefined) {
-      store.date_sale_from = parse.getDateIfValid(data.date_sale_from);
-    }
-
-    if(data.date_sale_to !== undefined) {
-      store.date_sale_to = parse.getDateIfValid(data.date_sale_to);
-    }
-
-    if(data.stock_tracking !== undefined) {
-      store.stock_tracking = parse.getBooleanIfValid(data.stock_tracking, false);
-    }
-
-    if(data.stock_preorder !== undefined) {
-      store.stock_preorder = parse.getBooleanIfValid(data.stock_preorder, false);
-    }
-
-    if(data.stock_backorder !== undefined) {
-      store.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
-    }
-
-    if(data.category_id !== undefined) {
-      store.category_id = parse.getObjectIDIfValid(data.category_id);
-    }
-
-    if(data.category_ids !== undefined) {
-      store.category_ids = parse.getArrayOfObjectID(data.category_ids);
-    }
-
-    return this.setAvailableSlug(store, id).then(store => this.setAvailableSku(store, id));
-  }
-
-  getArrayOfObjectID(array) {
-    if(array && Array.isArray(array)){
-      return array.map(item => parse.getObjectIDIfValid(item))
-    } else {
-      return [];
-    }
-  }
-
-  getValidAttributesArray(attributes) {
-    if(attributes && Array.isArray(attributes)){
-      return attributes
-      .filter(item => item.name && item.name !== '' && item.value && item.value !== '')
-      .map(item => ({
-        name: parse.getString(item.name),
-        value: parse.getString(item.value)
-      }))
-    } else {
-      return [];
-    }
-  }
-
-  getSortedImagesWithUrls(item, domain) {
-    if(item.images && item.images.length > 0) {
-      return item.images.map(image => {
-        image.url = this.getImageUrl(domain, item.id, image.filename || '');
-        return image;
-      }).sort((a,b) => (a.position - b.position ));
-    } else {
-      return item.images;
-    }
-  }
-
-  getImageUrl(domain, storeId, imageFileName) {
-    const imageUrl = new URL(settings.storesUploadUrl + '/' + storeId + '/' + imageFileName, domain);
-    return imageUrl.toString();
+      } else {
+        resolve(store);
+      }
+    });
   }
 
   changeProperties(item, domain) {
     if(item) {
+      item.id = item._id.toString();
+      item._id = undefined;
 
-      if(item.id) {
-        item.id = item.id.toString();
+      if(item.parent_id) {
+        item.parent_id = item.parent_id.toString();
       }
 
-      item.images = this.getSortedImagesWithUrls(item, domain);
-
-      if(item.category_id) {
-        item.category_id = item.category_id.toString();
-
-        if(item.categories && item.categories.length > 0) {
-          const category = item.categories[0];
-          if(category) {
-            if(item.category_name === "") {
-              item.category_name = category.name;
-            }
-
-            if(item.category_slug === "") {
-              item.category_slug = category.slug;
-            }
-
-            const categorySlug = category.slug || '';
-            const storeSlug = item.slug || '';
-
-            if(item.url === "") {
-              const itemUrl = new URL(categorySlug + '/' + storeSlug, domain);
-              item.url = itemUrl.toString();
-            }
-
-            if(item.path === "") {
-              item.path = `/${categorySlug}/${storeSlug}`;
-            }
-          }
-        }
+      if(item.slug) {
+        item.url = url.resolve(domain, item.slug || '');
+        item.path = url.resolve('/', item.slug || '');
       }
-      item.categories = undefined;
+
+      if(item.image) {
+        item.image = url.resolve(domain, settings.storesUploadUrl + '/' + item.id + '/' + item.image);
+      }
     }
 
     return item;
   }
 
-  isSkuExists(sku, storeId) {
-    let filter = {
-      sku: sku
-    }
-
-    if(storeId && ObjectID.isValid(storeId)) {
-      filter._id = { $ne: new ObjectID(storeId) }
-    }
-
-    return mongo.db.collection('stores').count(filter).then(count => count > 0);
+  deleteStoreImage(id) {
+    let dir = path.resolve(settings.storesUploadPath + '/' + id);
+    fse.emptyDirSync(dir);
+    this.updateStore(id, { 'image': '' });
   }
 
-  setAvailableSku(store, storeId) {
-    // SKU can be empty
-    if(store.sku && store.sku.length > 0) {
-      let newSku = store.sku;
-      let filter = {};
-      if(storeId && ObjectID.isValid(storeId)) {
-        filter._id = { $ne: new ObjectID(storeId) }
-      }
+  uploadStoreImage(req, res) {
+    let storeId = req.params.id;
+    let form = new formidable.IncomingForm(),
+        file_name = null,
+        file_size = 0;
 
-      return mongo.db.collection('stores').find(filter).project({sku: 1}).toArray()
-        .then(stores => {
-          while(stores.find(p => p.sku === newSku)) {
-            newSku += '-2';
-          }
-          store.sku = newSku;
-          return store;
-        })
-    } else {
-      return Promise.resolve(store)
-    }
-  }
+    form
+      .on('fileBegin', (name, file) => {
+        // Emitted whenever a field / value pair has been received.
+        let dir = path.resolve(settings.storesUploadPath + '/' + storeId);
+        fse.emptyDirSync(dir);
+        file.name = utils.getCorrectFileName(file.name);
+        file.path = dir + '/' + file.name;
+      })
+      .on('file', function(field, file) {
+        // every time a file has been uploaded successfully,
+        file_name = file.name;
+        file_size = file.size;
+      })
+      .on('error', (err) => {
+        res.status(500).send(this.getErrorMessage(err));
+      })
+      .on('end', () => {
+        //Emitted when the entire request has been received, and all contained files have finished flushing to disk.
+        if(file_name) {
+          this.updateStore(storeId, { 'image': file_name });
+          res.send({ 'file': file_name, 'size': file_size });
+        } else {
+          res.status(400).send(this.getErrorMessage('Required fields are missing'));
+        }
+      });
 
-  isSlugExists(slug, storeId) {
-    let filter = {
-      slug: utils.cleanSlug(slug)
-    }
-
-    if(storeId && ObjectID.isValid(storeId)) {
-      filter._id = { $ne: new ObjectID(storeId) }
-    }
-
-    return mongo.db.collection('stores').count(filter).then(count => count > 0);
-  }
-
-  setAvailableSlug(store, storeId) {
-    if(store.slug && store.slug.length > 0) {
-      let newSlug = utils.cleanSlug(store.slug);
-      let filter = {};
-      if(storeId && ObjectID.isValid(storeId)) {
-        filter._id = { $ne: new ObjectID(storeId) }
-      }
-
-      return mongo.db.collection('stores').find(filter).project({slug: 1}).toArray()
-        .then(stores => {
-          while(stores.find(p => p.slug === newSlug)) {
-            newSlug += '-2';
-          }
-          store.slug = newSlug;
-          return store;
-        })
-    } else {
-      return Promise.resolve(store)
-    }
+    form.parse(req);
   }
 
 }

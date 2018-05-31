@@ -106,6 +106,7 @@
     "slug": "^0.9.1",
     "theme": "file:theme",
     "ua-parser-js": "^0.7.17",
+    "valid-url": "^1.0.9",
     "webpack": "^4.1.1",
     "webpack-cli": "^2.0.11",
     "winston": "^2.4.1",

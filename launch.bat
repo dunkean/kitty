@@ -1,4 +1,4 @@
-start c:\Progra~1\MongoDB\Server\3.6\bin\mongod.exe -dbpath d:\mongodb
+REM start d:\Progra~1\MongoDB\Server\3.6\bin\mongod.exe -dbpath d:\mongodb
 start npm run win-start-api
 start npm run win-theme:watch
 start npm run win-store:watch

@@ -1,4 +1,5 @@
 const ObjectID = require('mongodb').ObjectID;
+const validUrl = require('valid-url');
 
 const getString = (value) => {
   return value
@@ -15,6 +16,12 @@ const getDateIfValid = (value) => {
 
 const getArrayIfValid = (value) => {
   return Array.isArray(value)
+    ? value
+    : null;
+}
+
+const getUrlIfValid = (value) => {
+  return validUrl.isUri(value)
     ? value
     : null;
 }

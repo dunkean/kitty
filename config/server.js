@@ -45,12 +45,16 @@ module.exports = {
 
   // path to uploads
   categoriesUploadPath: 'public/content/images/categories',
+  brandsUploadPath: 'public/content/images/brands',
+  storesUploadPath: 'public/content/images/stores',
   productsUploadPath: 'public/content/images/products',
   filesUploadPath: 'public/content',
   themeAssetsUploadPath: 'theme/assets/images',
 
   // url to uploads
   categoriesUploadUrl: '/images/categories',
+  brandsUploadUrl: '/images/brands',
+  storesUploadUrl: '/images/stores',
   productsUploadUrl: '/images/products',
   filesUploadUrl: '',
   themeAssetsUploadUrl: '/assets/images',

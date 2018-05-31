@@ -1,923 +1,294 @@
 'use strict';
 
 const path = require('path');
-const { URL } = require('url');
+const url = require('url');
+const formidable = require('formidable');
 const fse = require('fs-extra');
 const ObjectID = require('mongodb').ObjectID;
 const settings = require('../../lib/settings');
+const SettingsService = require('../settings/settings');
 const mongo = require('../../lib/mongo');
 const utils = require('../../lib/utils');
 const parse = require('../../lib/parse');
-const CategoriesService = require('./brandCategories');
-const SettingsService = require('../settings/settings');
+
+
+/*
+this.router.get('/v1/brands', security.checkUserScope.bind(this, security.scope.READ_BRANDS), this.getBrands.bind(this));
+this.router.post('/v1/brands', security.checkUserScope.bind(this, security.scope.WRITE_BRANDS), this.addBrand.bind(this));
+this.router.get('/v1/brands/:id', security.checkUserScope.bind(this, security.scope.READ_BRANDS), this.getSingleBrand.bind(this));
+this.router.put('/v1/brands/:id', security.checkUserScope.bind(this, security.scope.WRITE_BRANDS), this.updateBrand.bind(this));
+this.router.delete('/v1/brands/:id', security.checkUserScope.bind(this, security.scope.WRITE_BRANDS), this.deleteBrand.bind(this));
+this.router.post('/v1/brands/:id/image', security.checkUserScope.bind(this, security.scope.WRITE_BRANDS), this.uploadBrandImage.bind(this));
+this.router.delete('/v1/brands/:id/image', security.checkUserScope.bind(this, security.scope.WRITE_BRANDS), this.deleteBrandImage.bind(this));
+*/
+/*{
+    "_id" : ObjectId("5b082aaf455fe936f1aac16c"),
+    "date_created" : ISODate("2018-05-25T15:24:31.151Z"),
+    "date_updated" : null,
+    "name" : "Chien",
+    "description" : "Description of the brand Chien which is a brand !",
+    "meta_description" : "The brand Chien deals with Chien stuff.",
+    "meta_title" : "Chien",
+    "enabled" : true,
+    "position": number,
+    "slug" : "chien"
+    "image" : "",
+    "position" : 1165,
+    site_url
+    product_count
+}*/
 
 class BrandsService {
   constructor() {}
 
+  getFilter(params = {}) {
+    let filter = {};
+    const enabled = parse.getBooleanIfValid(params.enabled);
+    if (enabled !== null) {
+      filter.enabled = enabled;
+    }
+    const id = parse.getObjectIDIfValid(params.id);
+    if (id) {
+      filter._id = id;
+    }
+    return filter;
+  }
+
   async getBrands(params = {}) {
-    const categories = await CategoriesService.getCategories({ fields: 'parent_id' });
-    const fieldsArray = this.getArrayFromCSV(params.fields);
-    const limit = parse.getNumberIfPositive(params.limit) || 1000;
-    const offset = parse.getNumberIfPositive(params.offset) || 0;
-    const projectQuery = this.getProjectQuery(fieldsArray);
-    const sortQuery = this.getSortQuery(params); // todo: validate every sort field
-    const matchQuery = this.getMatchQuery(params, categories);
-    const matchTextQuery = this.getMatchTextQuery(params);
-    const itemsAggregation = [];
-
-    // $match with $text is only allowed as the first pipeline stage"
-    if(matchTextQuery) {
-      itemsAggregation.push({ $match: matchTextQuery });
-    }
-    itemsAggregation.push({ $project: projectQuery });
-    itemsAggregation.push({ $match: matchQuery });
-    if(sortQuery){
-      itemsAggregation.push({ $sort: sortQuery });
-    }
-    itemsAggregation.push({ $skip : offset });
-    itemsAggregation.push({ $limit : limit });
-    itemsAggregation.push({ $lookup: {
-      from: 'brandCategories',
-      localField: 'category_id',
-      foreignField: '_id',
-      as: 'categories'
-    }});
-    itemsAggregation.push({ $project: {
-      "categories.description": 0,
-      "categories.meta_description": 0,
-      "categories._id": 0,
-      "categories.date_created": 0,
-      "categories.date_updated": 0,
-      "categories.image": 0,
-      "categories.meta_title": 0,
-      "categories.enabled": 0,
-      "categories.sort": 0,
-      "categories.parent_id": 0,
-      "categories.position": 0
-    }});
-
-    const [itemsResult, countResult, minMaxPriceResult, allAttributesResult, attributesResult, generalSettings] = await Promise.all([
-      mongo.db.collection('brands').aggregate(itemsAggregation).toArray(),
-      this.getCountIfNeeded(params, matchQuery, matchTextQuery, projectQuery),
-      this.getMinMaxPriceIfNeeded(params, categories, matchTextQuery, projectQuery),
-      this.getAllAttributesIfNeeded(params, categories, matchTextQuery, projectQuery),
-      this.getAttributesIfNeeded(params, categories, matchTextQuery, projectQuery),
-      SettingsService.getSettings()
-    ]);
-
-    const domain = generalSettings.domain || '';
-    const ids = this.getArrayFromCSV(parse.getString(params.ids));
-    const sku = this.getArrayFromCSV(parse.getString(params.sku));
-
-    let items = itemsResult.map(item => this.changeProperties(item, domain));
-    items = this.sortItemsByArrayOfIdsIfNeed(items, ids, sortQuery);
-    items = this.sortItemsByArrayOfSkuIfNeed(items, sku, sortQuery);
-    items = items.filter(item => !!item);
-
-    let total_count = 0;
-    let min_price = 0;
-    let max_price = 0;
-
-    if(countResult && countResult.length === 1) {
-      total_count = countResult[0].count;
-    }
-
-    if(minMaxPriceResult && minMaxPriceResult.length === 1) {
-      min_price = minMaxPriceResult[0].min_price || 0;
-      max_price = minMaxPriceResult[0].max_price || 0;
-    }
-
-    let attributes = [];
-    if(allAttributesResult) {
-      attributes = this.getOrganizedAttributes(allAttributesResult, attributesResult, params);
-    }
-
-    return {
-      price: {
-        min: min_price,
-        max: max_price
-      },
-      attributes: attributes,
-      total_count: total_count,
-      has_more: (offset + items.length) < total_count,
-      data: items
-    }
-  }
-
-  sortItemsByArrayOfIdsIfNeed(items, arrayOfIds, sortQuery) {
-    return arrayOfIds && arrayOfIds.length > 0 && sortQuery === null && items && items.length > 0
-      ? arrayOfIds.map(id => items.find(item => item.id === id))
-      : items;
-  }
-
-  sortItemsByArrayOfSkuIfNeed(items, arrayOfSku, sortQuery) {
-    return arrayOfSku && arrayOfSku.length > 0 && sortQuery === null && items && items.length > 0
-      ? arrayOfSku.map(sku => items.find(item => item.sku === sku))
-      : items;
-  }
-
-  getOrganizedAttributes(allAttributesResult, filteredAttributesResult, params) {
-    const uniqueAttributesName = [...new Set(allAttributesResult.map(a => a._id.name))];
-
-    return uniqueAttributesName
-    .sort()
-    .map(attributeName => ({
-        name: attributeName,
-        values: allAttributesResult
-          .filter(b => b._id.name === attributeName)
-          .sort((a,b) => (a._id.value > b._id.value) ? 1 : ((b._id.value > a._id.value) ? -1 : 0))
-          .map(b => ({
-            name:b._id.value,
-            checked: params[`attributes.${b._id.name}`] && params[`attributes.${b._id.name}`].includes(b._id.value) ? true : false,
-            // total: b.count,
-            count: this.getAttributeCount(filteredAttributesResult, b._id.name, b._id.value)
-            })
-          )
-      })
-    )
-  }
-
-  getAttributeCount(attributesArray, attributeName, attributeValue) {
-    const attribute = attributesArray.find(a => a._id.name === attributeName && a._id.value === attributeValue);
-    return attribute ? attribute.count : 0;
-  }
-
-  getCountIfNeeded(params, matchQuery, matchTextQuery, projectQuery) {
-    // get total count
-    // not for brand details or ids
-    if(!params.ids) {
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: matchQuery });
-      aggregation.push({ $group: {_id: null, count: { $sum: 1 } }});
-      return mongo.db.collection('brands').aggregate(aggregation).toArray();
-    } else {
-      return null;
-    }
-  }
-
-  getMinMaxPriceIfNeeded(params, categories, matchTextQuery, projectQuery) {
-    // get min max price without filter by price
-    // not for brand details or ids
-    if(!params.ids) {
-      const minMaxPriceMatchQuery = this.getMatchQuery(params, categories, false, false);
-
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: minMaxPriceMatchQuery });
-      aggregation.push({ $group: {_id: null, min_price: { $min: "$price" }, max_price: { $max: "$price" }}});
-      return mongo.db.collection('brands').aggregate(aggregation).toArray();
-    } else {
-      return null;
-    }
-  }
-
-  getAllAttributesIfNeeded(params, categories, matchTextQuery, projectQuery) {
-    // get attributes with counts without filter by attributes
-    // only for category
-    if(params.category_id) {
-      const attributesMatchQuery = this.getMatchQuery(params, categories, false, false);
-
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: attributesMatchQuery });
-      aggregation.push({ "$unwind" : "$attributes" });
-      aggregation.push({ "$group" : { "_id" : "$attributes", count : { "$sum" : 1 } } });
-      return mongo.db.collection('brands').aggregate(aggregation).toArray();
-    } else {
-      return null
-    }
-  }
-
-  getAttributesIfNeeded(params, categories, matchTextQuery, projectQuery) {
-    // get attributes with counts without filter by attributes
-    // only for category
-    if(params.category_id) {
-      const attributesMatchQuery = this.getMatchQuery(params, categories, false, true);
-
-      const aggregation = [];
-      if(matchTextQuery) {
-        aggregation.push({ $match: matchTextQuery });
-      }
-      aggregation.push({ $project: projectQuery });
-      aggregation.push({ $match: attributesMatchQuery });
-      aggregation.push({ "$unwind" : "$attributes" });
-      aggregation.push({ "$group" : { "_id" : "$attributes", count : { "$sum" : 1 } } });
-      return mongo.db.collection('brands').aggregate(aggregation).toArray();
-    } else {
-      return null
-    }
-  }
-
-  getSortQuery({ sort, search }) {
-    const isSearchUsed = search && search.length > 0 && search !== 'null' && search !== 'undefined';
-    if(sort === "search" && isSearchUsed) {
-      return { score: { $meta: "textScore" } }
-    } else if(sort && sort.length > 0) {
-      const fields = sort.split(',');
-      return Object.assign(...fields.map(field => (
-      	{[field.startsWith('-') ? field.slice(1) : field]: field.startsWith('-') ? -1 : 1}
-      )))
-    } else {
-      return null
-    }
-  }
-
-
-  getProjectQuery(fieldsArray) {
-    let salePrice = "$sale_price";
-    let regularPrice = "$regular_price";
-    let costPrice = "$cost_price";
-
-    let project =
-    {
-      category_ids: 1,
-      related_brand_ids: 1,
-      enabled: 1,
-      discontinued: 1,
-      date_created: 1,
-      date_updated: 1,
-      cost_price: costPrice,
-      regular_price: regularPrice,
-      sale_price: salePrice,
-      date_sale_from: 1,
-      date_sale_to: 1,
-      images: 1,
-      prices: 1,
-      quantity_inc: 1,
-      quantity_min: 1,
-      meta_description: 1,
-      meta_title: 1,
-      name: 1,
-      description: 1,
-      sku: 1,
-      code: 1,
-      tax_class: 1,
-      position: 1,
-      tags: 1,
-      options: 1,
-      variants: 1,
-      weight: 1,
-      dimensions: 1,
-      attributes: 1,
-      date_stock_expected: 1,
-      stock_tracking: 1,
-      stock_preorder: 1,
-      stock_backorder: 1,
-      stock_quantity: 1,
-      packaging: 1,
-    	on_sale: {
-    		$and: [
-    			{
-    				$lt: [new Date(), "$date_sale_to"]
-    			}, {
-    				$gt: [new Date(), "$date_sale_from"]
-    			}
-    		]
-    	},
-    	variable: {
-    		$gt: [
-    			{
-            $size: { "$ifNull": [ "$variants", [] ] }
-    			},
-    			0
-    		]
-    	},
-    	price: {
-    		$cond: {
-    			if: {
-    				$and: [
-    					{
-    						$lt: [new Date(), "$date_sale_to"]
-    					}, {
-    						$gt: [new Date(), "$date_sale_from"]
-    					}, {
-    						$gt: ["$sale_price", 0]
-    					}
-    				]
-    			},
-    			then: salePrice,
-    			else: regularPrice,
-    	}
-    	},
-    	stock_status: {
-    		$cond: {
-    			if: {
-    				$eq: ["$discontinued", true]
-    			},
-    			then: "discontinued",
-    			else : {
-    					$cond: {
-    						if: {
-    							$gt: ["$stock_quantity", 0]
-    						},
-    						then: "available",
-    						else : {
-    								$cond: {
-    									if: {
-    										$eq: ["$stock_backorder", true]
-    									},
-    									then: "backorder",
-    									else : {
-    											$cond: {
-    												if: {
-    													$eq: ["$stock_preorder", true]
-    												},
-    												then: "preorder",
-    												else : "out_of_stock"
-    										}
-    										}
-    									}
-    							}
-    						}
-    				}
-    			}
-    	},
-      url: { "$literal" : "" },
-      path: { "$literal" : "" },
-      category_name: { "$literal" : "" },
-      category_slug: { "$literal" : "" }
-    };
-
-    if(fieldsArray && fieldsArray.length > 0) {
-      project = this.getProjectFilteredByFields(project, fieldsArray);
-    }
-
-    // required fields
-    project._id = 0;
-    project.id = "$_id";
-    project.category_id = 1;
-    project.slug = 1;
-
-    return project;
-  }
-
-  getArrayFromCSV(fields) {
-    return (fields && fields.length > 0) ? fields.split(',') : [];
-  }
-
-  getProjectFilteredByFields(project, fieldsArray) {
-    return Object.assign(...fieldsArray.map(key => ({[key]: project[key]}) ));
-  }
-
-  getMatchTextQuery({search}) {
-    if (search && search.length > 0 && search !== 'null' && search !== 'undefined') {
-      return {
-        '$or': [
-          { sku: new RegExp(search, 'i') },
-          { '$text': { '$search': search } }
-        ]
-      }
-    } else {
-      return null;
-    }
-  }
-
-  getMatchAttributesQuery(params) {
-    let attributesArray = Object.keys(params)
-    .filter(paramName => paramName.startsWith('attributes.'))
-    .map(paramName => {
-        const paramValue = params[paramName];
-        const paramValueArray = Array.isArray(paramValue) ? paramValue : [paramValue];
-
-        return {
-          name: paramName.replace('attributes.', ''),
-          values: paramValueArray
-        }
-    });
-
-    return attributesArray;
-  }
-
-  getMatchQuery(params, categories, useAttributes = true, usePrice = true) {
-    let {
-      category_id,
-      enabled,
-      discontinued,
-      on_sale,
-      stock_status,
-      price_from,
-      price_to,
-      sku,
-      ids,
-      tags
-    } = params;
-
-     // parse values
-     category_id = parse.getObjectIDIfValid(category_id);
-     enabled = parse.getBooleanIfValid(enabled);
-     discontinued = parse.getBooleanIfValid(discontinued);
-     on_sale = parse.getBooleanIfValid(on_sale);
-     price_from = parse.getNumberIfPositive(price_from);
-     price_to = parse.getNumberIfPositive(price_to);
-     ids = parse.getString(ids);
-     tags = parse.getString(tags);
-
-     let queries = [];
-     const currentDate = new Date();
-
-     if(category_id !== null) {
-       let categoryChildren = [];
-       CategoriesService.findAllChildren(categories, category_id, categoryChildren);
-       queries.push({
-         '$or': [
-           {
-             category_id: { $in: categoryChildren }
-           }, {
-             category_ids: category_id
-           }
-         ]
-       });
-     }
-
-     if(enabled !== null) {
-       queries.push({
-         enabled: enabled
-       });
-     }
-
-     if(discontinued !== null) {
-       queries.push({
-         discontinued: discontinued
-       });
-     }
-
-     if(on_sale !== null) {
-       queries.push({
-         on_sale: on_sale
-       });
-     }
-
-     if(usePrice){
-       if(price_from !== null && price_from > 0) {
-         queries.push({
-           price: { $gte: price_from }
-         });
-       }
-
-       if(price_to !== null && price_to > 0) {
-         queries.push({
-           price: { $lte: price_to }
-         });
-       }
-     }
-
-     if(stock_status && stock_status.length > 0) {
-       queries.push({
-         stock_status: stock_status
-       });
-     }
-
-     if(ids && ids.length > 0) {
-       const idsArray = ids.split(',');
-       let objectIDs = [];
-       for(const id of idsArray) {
-         if(ObjectID.isValid(id)) {
-           objectIDs.push(new ObjectID(id));
-         }
-       }
-       queries.push({
-         id: { $in: objectIDs }
-       });
-     }
-
-     if(sku && sku.length > 0) {
-       if(sku.includes(',')){
-         // multiple values
-         const skus = sku.split(',');
-         queries.push({
-           sku: { $in: skus }
-         });
-       } else {
-         // single value
-         queries.push({
-           sku: sku
-         });
-       }
-     }
-
-     if (tags && tags.length > 0) {
-       queries.push({
-         tags: tags
-       });
-     }
-
-     if(useAttributes){
-       const attributesArray = this.getMatchAttributesQuery(params);
-       if(attributesArray && attributesArray.length > 0) {
-         const matchesArray = attributesArray.map(attribute => ({ $elemMatch : { "name" : attribute.name, "value" : { "$in": attribute.values } } }))
-         queries.push({
-           "attributes": { "$all": matchesArray }
-         });
-       }
-     }
-
-
-     let matchQuery = {};
-     if(queries.length === 1) {
-       matchQuery = queries[0];
-     } else if(queries.length > 1) {
-       matchQuery = {
-        $and: queries
-       }
-     }
-
-     return matchQuery;
+    const filter = this.getFilter(params);
+    const projection = utils.getProjectionFromFields(params.fields);
+    const generalSettings = await SettingsService.getSettings();
+    const domain = generalSettings.domain;
+    const items = await mongo.db.collection('brands').find(filter, { projection: projection }).sort({position: 1}).toArray();
+    const result = items.map(brand => this.changeProperties(brand, domain));
+    return result;
   }
 
   getSingleBrand(id) {
-    if(!ObjectID.isValid(id)) {
+    if (!ObjectID.isValid(id)) {
       return Promise.reject('Invalid identifier');
     }
-    return this.getBrands({ ids: id, limit: 1})
-    .then(brands => brands.data.length > 0 ? brands.data[0] : {})
+    return this.getBrands({id: id}).then(brands => {
+      return brands.length > 0
+        ? brands[0]
+        : null;
+    })
   }
 
-  addBrand(data) {
-    return this.getValidDocumentForInsert(data)
-    .then(dataToInsert => mongo.db.collection('brands').insertMany([dataToInsert]))
-    .then(res => this.getSingleBrand(res.ops[0]._id.toString()))
+  async addBrand(data) {
+    const lastBrand = await mongo.db.collection('brands').findOne({}, { sort: {position: -1} });
+    const newPosition = (lastBrand && lastBrand.position > 0) ? lastBrand.position + 1 : 1;
+    const dataToInsert = await this.getValidDocumentForInsert(data, newPosition);
+    const insertResult = await mongo.db.collection('brands').insertMany([dataToInsert]);
+    return this.getSingleBrand(insertResult.ops[0]._id.toString());
   }
 
   updateBrand(id, data) {
     if(!ObjectID.isValid(id)) {
       return Promise.reject('Invalid identifier');
     }
-    const brandObjectID = new ObjectID(id);
+    let brandObjectID = new ObjectID(id);
 
     return this.getValidDocumentForUpdate(id, data)
-    .then(dataToSet => mongo.db.collection('brands').updateOne({ _id: brandObjectID }, {$set: dataToSet}))
-    .then(res => res.modifiedCount > 0 ? this.getSingleBrand(id) : null)
+      .then(dataToSet => mongo.db.collection('brands').updateOne({ _id: brandObjectID }, {$set: dataToSet}))
+      .then(res => res.modifiedCount > 0 ? this.getSingleBrand(id) : null)
   }
 
-  deleteBrand(brandId) {
-    if(!ObjectID.isValid(brandId)) {
+  deleteBrand(id) {
+    if(!ObjectID.isValid(id)) {
       return Promise.reject('Invalid identifier');
     }
-    const brandObjectID = new ObjectID(brandId);
-    // 1. delete Brand
-    return mongo.db.collection('brands').deleteOne({'_id': brandObjectID})
-    .then(deleteResponse => {
-      if(deleteResponse.deletedCount > 0) {
-        // 2. delete directory with images
-        let deleteDir = path.resolve(settings.brandsUploadPath + '/' + brandId);
-        fse.remove(deleteDir, err => {});
+    // 1. get all brands
+    return this.getBrands()
+    .then(idsToDelete => {
+      // 3. delete brands
+      let objectsToDelete = idsToDelete.map((id) => ( new ObjectID(id) ));
+      // return mongo.db.collection('brands').deleteMany({_id: { $in: objectsToDelete}}).then(() => idsToDelete);
+      return mongo.db.collection('brands').deleteMany({_id: { $in: objectsToDelete}}).then(deleteResponse => deleteResponse.deletedCount > 0 ? idsToDelete : null);
+    })
+    .then(idsToDelete => {
+      // 4. update brand_id for products
+      return idsToDelete ? mongo.db.collection('products').updateMany({ brand_id: { $in: idsToDelete}}, { $set: { brand_id: null }}).then(() => idsToDelete) : null;
+    })
+    .then(idsToDelete => {
+      // 5. delete directories with images
+      if(idsToDelete) {
+        for(let brandId of idsToDelete) {
+          let deleteDir = path.resolve(settings.brandsUploadPath + '/' + brandId);
+          fse.remove(deleteDir, err => {});
+        }
+        return Promise.resolve(true);
+      } else {
+        return Promise.resolve(false);
       }
-      return deleteResponse.deletedCount > 0;
     });
   }
 
-  getValidDocumentForInsert(data) {
-    //  Allow empty brand to create draft
-
-    let brand = {
-      'date_created': new Date(),
-      'date_updated': null,
-      'images': [],
-      'dimensions': {
-          'length': 0,
-          'width': 0,
-          'height': 0
-      }
-    };
-
-    brand.name = parse.getString(data.name);
-    brand.description = parse.getString(data.description);
-    brand.meta_description = parse.getString(data.meta_description);
-    brand.meta_title = parse.getString(data.meta_title);
-    brand.tags = parse.getArrayIfValid(data.tags) || [];
-    brand.attributes = this.getValidAttributesArray(data.attributes);
-    brand.enabled = parse.getBooleanIfValid(data.enabled, true);
-    brand.discontinued = parse.getBooleanIfValid(data.discontinued, false);
-    brand.slug = parse.getString(data.slug);
-    brand.sku = parse.getString(data.sku);
-    brand.code = parse.getString(data.code);
-    brand.tax_class = parse.getString(data.tax_class);
-    brand.related_brand_ids = this.getArrayOfObjectID(data.related_brand_ids);
-    brand.prices = parse.getArrayIfValid(data.prices) || [];
-    brand.cost_price = parse.getNumberIfPositive(data.cost_price) || 0;
-    brand.regular_price = parse.getNumberIfPositive(data.regular_price) || 0;
-    brand.sale_price = parse.getNumberIfPositive(data.sale_price) || 0;
-    brand.quantity_inc = parse.getNumberIfPositive(data.quantity_inc) || 1;
-    brand.quantity_min = parse.getNumberIfPositive(data.quantity_min) || 1;
-    brand.weight = parse.getNumberIfPositive(data.weight) || 0;
-    brand.stock_quantity = parse.getNumberIfPositive(data.stock_quantity) || 0;
-    brand.position = parse.getNumberIfValid(data.position);
-    brand.date_stock_expected = parse.getDateIfValid(data.date_stock_expected);
-    brand.date_sale_from = parse.getDateIfValid(data.date_sale_from);
-    brand.date_sale_to = parse.getDateIfValid(data.date_sale_to);
-    brand.stock_tracking = parse.getBooleanIfValid(data.stock_tracking, false);
-    brand.stock_preorder = parse.getBooleanIfValid(data.stock_preorder, false);
-    brand.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
-    brand.category_id = parse.getObjectIDIfValid(data.category_id);
-    brand.category_ids = parse.getArrayOfObjectID(data.category_ids);
-    brand.packaging = parse.getString(data.packaging);
-
-    if(data.dimensions) {
-      brand.dimensions = data.dimensions;
-    }
-
-    if(brand.slug.length === 0) {
-      brand.slug = brand.name;
-    }
-
-    return this.setAvailableSlug(brand).then(brand => this.setAvailableSku(brand));
+  getErrorMessage(err) {
+    return { 'error': true, 'message': err.toString() };
   }
+
+  getValidDocumentForInsert(data, newPosition) {
+      //  Allow empty brand to create draft
+
+      let brand = {
+        'date_created': new Date(),
+        'date_updated': null,
+        'image': ''
+      };
+
+      brand.name = parse.getString(data.name);
+      brand.description = parse.getString(data.description);
+      brand.meta_description = parse.getString(data.meta_description);
+      brand.meta_title = parse.getString(data.meta_title);
+      brand.enabled = parse.getBooleanIfValid(data.enabled, true);
+      brand.sort = parse.getString(data.sort);
+      brand.parent_id = parse.getObjectIDIfValid(data.parent_id);
+      brand.position = parse.getNumberIfValid(data.position) || newPosition;
+      brand.site_url = parse.getUrlIfValid(data.site_url);
+      let slug = (!data.slug || data.slug.length === 0) ? data.name : data.slug;
+      if(!slug || slug.length === 0) {
+        return Promise.resolve(brand);
+      } else {
+        return utils.getAvailableSlug(slug).then(newSlug => {
+          brand.slug = newSlug;
+          return brand;
+        });
+      }
+  }
+
 
   getValidDocumentForUpdate(id, data) {
-    if (Object.keys(data).length === 0) {
-      throw new Error('Required fields are missing');
-    }
-
-    let brand = {
-      'date_updated': new Date()
-    }
-
-    if(data.name !== undefined) {
-      brand.name = parse.getString(data.name);
-    }
-
-    if(data.description !== undefined) {
-      brand.description = parse.getString(data.description);
-    }
-
-    if(data.meta_description !== undefined) {
-      brand.meta_description = parse.getString(data.meta_description);
-    }
-
-    if(data.meta_title !== undefined) {
-      brand.meta_title = parse.getString(data.meta_title);
-    }
-
-    if(data.tags !== undefined) {
-      brand.tags = parse.getArrayIfValid(data.tags) || [];
-    }
-
-    if(data.attributes !== undefined) {
-      brand.attributes = this.getValidAttributesArray(data.attributes);
-    }
-
-    if(data.dimensions !== undefined) {
-      brand.dimensions = data.dimensions;
-    }
-
-    if(data.enabled !== undefined) {
-      brand.enabled = parse.getBooleanIfValid(data.enabled, true);
-    }
-
-    if(data.discontinued !== undefined) {
-      brand.discontinued = parse.getBooleanIfValid(data.discontinued, false);
-    }
-
-    if(data.slug !== undefined) {
-      if(data.slug === '' && brand.name && brand.name.length > 0) {
-        brand.slug = brand.name;
-      } else {
-        brand.slug = parse.getString(data.slug);
+    return new Promise((resolve, reject) => {
+      if(!ObjectID.isValid(id)) {
+        reject('Invalid identifier');
       }
-    }
+      if (Object.keys(data).length === 0) {
+        reject('Required fields are missing');
+      }
 
-    if(data.sku !== undefined) {
-      brand.sku = parse.getString(data.sku);
-    }
+      let brand = {
+        'date_updated': new Date()
+      };
 
-    if(data.code !== undefined) {
-      brand.code = parse.getString(data.code);
-    }
+      if(data.name !== undefined) {
+        brand.name = parse.getString(data.name);
+      }
 
-    if(data.tax_class !== undefined) {
-      brand.tax_class = parse.getString(data.tax_class);
-    }
+      if(data.description !== undefined) {
+        brand.description = parse.getString(data.description);
+      }
 
-    if(data.related_brand_ids !== undefined) {
-      brand.related_brand_ids = this.getArrayOfObjectID(data.related_brand_ids);
-    }
+      if(data.meta_description !== undefined) {
+        brand.meta_description = parse.getString(data.meta_description);
+      }
 
-    if(data.prices !== undefined) {
-      brand.prices = parse.getArrayIfValid(data.prices) || [];
-    }
+      if(data.meta_title !== undefined) {
+        brand.meta_title = parse.getString(data.meta_title);
+      }
 
-    if(data.cost_price !== undefined) {
-      brand.cost_price = parse.getNumberIfPositive(data.cost_price) || 0;
-    }
+      if(data.site_url !== undefined) {
+        brand.site_url = parse.getUrlIfValid(data.site_url);
+      }
 
-    if(data.regular_price !== undefined) {
-      brand.regular_price = parse.getNumberIfPositive(data.regular_price) || 0;
-    }
+      if(data.enabled !== undefined) {
+        brand.enabled = parse.getBooleanIfValid(data.enabled, true);
+      }
 
-    if(data.sale_price !== undefined) {
-      brand.sale_price = parse.getNumberIfPositive(data.sale_price) || 0;
-    }
+      if(data.image !== undefined) {
+        brand.image = data.image;
+      }
 
-    if(data.quantity_inc !== undefined) {
-      brand.quantity_inc = parse.getNumberIfPositive(data.quantity_inc) || 1;
-    }
+      if(data.position >= 0) {
+        brand.position = data.position;
+      }
 
-    if(data.quantity_min !== undefined) {
-      brand.quantity_min = parse.getNumberIfPositive(data.quantity_min) || 1;
-    }
+      if(data.sort !== undefined) {
+        brand.sort = data.sort;
+      }
 
-    if(data.weight !== undefined) {
-      brand.weight = parse.getNumberIfPositive(data.weight) || 0;
-    }
+      if(data.slug !== undefined){
+        let slug = data.slug;
+        if(!slug || slug.length === 0) {
+          slug = data.name;
+        }
 
-    if(data.stock_quantity !== undefined) {
-      brand.stock_quantity = parse.getNumberIfPositive(data.stock_quantity) || 0;
-    }
+        utils.getAvailableSlug(slug, id)
+        .then((newSlug) => {
+          brand.slug = newSlug;
+          resolve(brand);
+        })
+        .catch((err) => {
+          reject(err);
+        });
 
-    if(data.position !== undefined) {
-      brand.position = parse.getNumberIfValid(data.position);
-    }
-
-    if(data.date_stock_expected !== undefined) {
-      brand.date_stock_expected = parse.getDateIfValid(data.date_stock_expected);
-    }
-
-    if(data.date_sale_from !== undefined) {
-      brand.date_sale_from = parse.getDateIfValid(data.date_sale_from);
-    }
-
-    if(data.date_sale_to !== undefined) {
-      brand.date_sale_to = parse.getDateIfValid(data.date_sale_to);
-    }
-
-    if(data.stock_tracking !== undefined) {
-      brand.stock_tracking = parse.getBooleanIfValid(data.stock_tracking, false);
-    }
-
-    if(data.stock_preorder !== undefined) {
-      brand.stock_preorder = parse.getBooleanIfValid(data.stock_preorder, false);
-    }
-
-    if(data.stock_backorder !== undefined) {
-      brand.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
-    }
-
-    if(data.category_id !== undefined) {
-      brand.category_id = parse.getObjectIDIfValid(data.category_id);
-    }
-
-    if(data.category_ids !== undefined) {
-      brand.category_ids = parse.getArrayOfObjectID(data.category_ids);
-    }
-
-    return this.setAvailableSlug(brand, id).then(brand => this.setAvailableSku(brand, id));
-  }
-
-  getArrayOfObjectID(array) {
-    if(array && Array.isArray(array)){
-      return array.map(item => parse.getObjectIDIfValid(item))
-    } else {
-      return [];
-    }
-  }
-
-  getValidAttributesArray(attributes) {
-    if(attributes && Array.isArray(attributes)){
-      return attributes
-      .filter(item => item.name && item.name !== '' && item.value && item.value !== '')
-      .map(item => ({
-        name: parse.getString(item.name),
-        value: parse.getString(item.value)
-      }))
-    } else {
-      return [];
-    }
-  }
-
-  getSortedImagesWithUrls(item, domain) {
-    if(item.images && item.images.length > 0) {
-      return item.images.map(image => {
-        image.url = this.getImageUrl(domain, item.id, image.filename || '');
-        return image;
-      }).sort((a,b) => (a.position - b.position ));
-    } else {
-      return item.images;
-    }
-  }
-
-  getImageUrl(domain, brandId, imageFileName) {
-    const imageUrl = new URL(settings.brandsUploadUrl + '/' + brandId + '/' + imageFileName, domain);
-    return imageUrl.toString();
+      } else {
+        resolve(brand);
+      }
+    });
   }
 
   changeProperties(item, domain) {
     if(item) {
+      item.id = item._id.toString();
+      item._id = undefined;
 
-      if(item.id) {
-        item.id = item.id.toString();
+      if(item.parent_id) {
+        item.parent_id = item.parent_id.toString();
       }
 
-      item.images = this.getSortedImagesWithUrls(item, domain);
-
-      if(item.category_id) {
-        item.category_id = item.category_id.toString();
-
-        if(item.categories && item.categories.length > 0) {
-          const category = item.categories[0];
-          if(category) {
-            if(item.category_name === "") {
-              item.category_name = category.name;
-            }
-
-            if(item.category_slug === "") {
-              item.category_slug = category.slug;
-            }
-
-            const categorySlug = category.slug || '';
-            const brandSlug = item.slug || '';
-
-            if(item.url === "") {
-              const itemUrl = new URL(categorySlug + '/' + brandSlug, domain);
-              item.url = itemUrl.toString();
-            }
-
-            if(item.path === "") {
-              item.path = `/${categorySlug}/${brandSlug}`;
-            }
-          }
-        }
+      if(item.slug) {
+        item.url = url.resolve(domain, item.slug || '');
+        item.path = url.resolve('/', item.slug || '');
       }
-      item.categories = undefined;
+
+      if(item.image) {
+        item.image = url.resolve(domain, settings.brandsUploadUrl + '/' + item.id + '/' + item.image);
+      }
     }
 
     return item;
   }
 
-  isSkuExists(sku, brandId) {
-    let filter = {
-      sku: sku
-    }
-
-    if(brandId && ObjectID.isValid(brandId)) {
-      filter._id = { $ne: new ObjectID(brandId) }
-    }
-
-    return mongo.db.collection('brands').count(filter).then(count => count > 0);
+  deleteBrandImage(id) {
+    let dir = path.resolve(settings.brandsUploadPath + '/' + id);
+    fse.emptyDirSync(dir);
+    this.updateBrand(id, { 'image': '' });
   }
 
-  setAvailableSku(brand, brandId) {
-    // SKU can be empty
-    if(brand.sku && brand.sku.length > 0) {
-      let newSku = brand.sku;
-      let filter = {};
-      if(brandId && ObjectID.isValid(brandId)) {
-        filter._id = { $ne: new ObjectID(brandId) }
-      }
+  uploadBrandImage(req, res) {
+    let brandId = req.params.id;
+    let form = new formidable.IncomingForm(),
+        file_name = null,
+        file_size = 0;
 
-      return mongo.db.collection('brands').find(filter).project({sku: 1}).toArray()
-        .then(brands => {
-          while(brands.find(p => p.sku === newSku)) {
-            newSku += '-2';
-          }
-          brand.sku = newSku;
-          return brand;
-        })
-    } else {
-      return Promise.resolve(brand)
-    }
-  }
+    form
+      .on('fileBegin', (name, file) => {
+        // Emitted whenever a field / value pair has been received.
+        let dir = path.resolve(settings.brandsUploadPath + '/' + brandId);
+        fse.emptyDirSync(dir);
+        file.name = utils.getCorrectFileName(file.name);
+        file.path = dir + '/' + file.name;
+      })
+      .on('file', function(field, file) {
+        // every time a file has been uploaded successfully,
+        file_name = file.name;
+        file_size = file.size;
+      })
+      .on('error', (err) => {
+        res.status(500).send(this.getErrorMessage(err));
+      })
+      .on('end', () => {
+        //Emitted when the entire request has been received, and all contained files have finished flushing to disk.
+        if(file_name) {
+          this.updateBrand(brandId, { 'image': file_name });
+          res.send({ 'file': file_name, 'size': file_size });
+        } else {
+          res.status(400).send(this.getErrorMessage('Required fields are missing'));
+        }
+      });
 
-  isSlugExists(slug, brandId) {
-    let filter = {
-      slug: utils.cleanSlug(slug)
-    }
-
-    if(brandId && ObjectID.isValid(brandId)) {
-      filter._id = { $ne: new ObjectID(brandId) }
-    }
-
-    return mongo.db.collection('brands').count(filter).then(count => count > 0);
-  }
-
-  setAvailableSlug(brand, brandId) {
-    if(brand.slug && brand.slug.length > 0) {
-      let newSlug = utils.cleanSlug(brand.slug);
-      let filter = {};
-      if(brandId && ObjectID.isValid(brandId)) {
-        filter._id = { $ne: new ObjectID(brandId) }
-      }
-
-      return mongo.db.collection('brands').find(filter).project({slug: 1}).toArray()
-        .then(brands => {
-          while(brands.find(p => p.slug === newSlug)) {
-            newSlug += '-2';
-          }
-          brand.slug = newSlug;
-          return brand;
-        })
-    } else {
-      return Promise.resolve(brand)
-    }
+    form.parse(req);
   }
 
 }
