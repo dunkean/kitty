@@ -107,10 +107,6 @@ class StoresService {
       return mongo.db.collection('stores').deleteMany({_id: { $in: objectsToDelete}}).then(deleteResponse => deleteResponse.deletedCount > 0 ? idsToDelete : null);
     })
     .then(idsToDelete => {
-      // 4. update store_id for products
-      return idsToDelete ? mongo.db.collection('products').updateMany({ store_id: { $in: idsToDelete}}, { $set: { store_id: null }}).then(() => idsToDelete) : null;
-    })
-    .then(idsToDelete => {
       // 5. delete directories with images
       if(idsToDelete) {
         for(let storeId of idsToDelete) {

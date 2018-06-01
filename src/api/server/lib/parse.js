@@ -155,6 +155,7 @@ module.exports = {
   getString: getString,
   getObjectIDIfValid: getObjectIDIfValid,
   getDateIfValid: getDateIfValid,
+  getUrlIfValid: getUrlIfValid,
   getArrayIfValid: getArrayIfValid,
   getArrayOfObjectID: getArrayOfObjectID,
   getNumberIfValid: getNumberIfValid,
