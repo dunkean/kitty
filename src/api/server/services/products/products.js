@@ -241,6 +241,7 @@ class ProductsService {
     let project =
     {
       category_ids: 1,
+      brand_id: 1,
       related_product_ids: 1,
       enabled: 1,
       discontinued: 1,
@@ -620,6 +621,7 @@ class ProductsService {
     product.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
     product.category_id = parse.getObjectIDIfValid(data.category_id);
     product.category_ids = parse.getArrayOfObjectID(data.category_ids);
+    product.brand_id = parse.getArrayOfObjectID(data.brand_id);
     product.packaging = parse.getString(data.packaging);
 
     if(data.dimensions) {
@@ -764,6 +766,10 @@ class ProductsService {
 
     if(data.category_id !== undefined) {
       product.category_id = parse.getObjectIDIfValid(data.category_id);
+    }
+
+    if(data.brand_id !== undefined) {
+      product.brand_id = parse.getObjectIDIfValid(data.brand_id);
     }
 
     if(data.category_ids !== undefined) {
