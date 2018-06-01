@@ -94,30 +94,15 @@ class StoresService {
       .then(res => res.modifiedCount > 0 ? this.getSingleStore(id) : null)
   }
 
-  deleteStore(id) {
-    if(!ObjectID.isValid(id)) {
+  async deleteStore(storeId) {
+    if (!ObjectID.isValid(storeId)) {
       return Promise.reject('Invalid identifier');
     }
-    // 1. get all stores
-    return this.getStores()
-    .then(idsToDelete => {
-      // 3. delete stores
-      let objectsToDelete = idsToDelete.map((id) => ( new ObjectID(id) ));
-      // return mongo.db.collection('stores').deleteMany({_id: { $in: objectsToDelete}}).then(() => idsToDelete);
-      return mongo.db.collection('stores').deleteMany({_id: { $in: objectsToDelete}}).then(deleteResponse => deleteResponse.deletedCount > 0 ? idsToDelete : null);
-    })
-    .then(idsToDelete => {
-      // 5. delete directories with images
-      if(idsToDelete) {
-        for(let storeId of idsToDelete) {
-          let deleteDir = path.resolve(settings.storesUploadPath + '/' + storeId);
-          fse.remove(deleteDir, err => {});
-        }
-        return Promise.resolve(true);
-      } else {
-        return Promise.resolve(false);
-      }
-    });
+    const storeObjectID = new ObjectID(storeId);
+    const store = await this.getSingleCustomer(storeId);
+    const deleteResponse = await mongo.db.collection('customers').deleteOne({'_id': storeObjectID});
+    //// TODO: delete all prices for this store
+    return deleteResponse.deletedCount > 0;
   }
 
   getErrorMessage(err) {

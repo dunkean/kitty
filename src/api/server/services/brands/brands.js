@@ -94,34 +94,15 @@ class BrandsService {
       .then(res => res.modifiedCount > 0 ? this.getSingleBrand(id) : null)
   }
 
-  deleteBrand(id) {
-    if(!ObjectID.isValid(id)) {
+  async deleteBrand(brandId) {
+    if (!ObjectID.isValid(brandId)) {
       return Promise.reject('Invalid identifier');
     }
-    // 1. get all brands
-    return this.getBrands()
-    .then(idsToDelete => {
-      // 3. delete brands
-      let objectsToDelete = idsToDelete.map((id) => ( new ObjectID(id) ));
-      // return mongo.db.collection('brands').deleteMany({_id: { $in: objectsToDelete}}).then(() => idsToDelete);
-      return mongo.db.collection('brands').deleteMany({_id: { $in: objectsToDelete}}).then(deleteResponse => deleteResponse.deletedCount > 0 ? idsToDelete : null);
-    })
-    .then(idsToDelete => {
-      // 4. update brand_id for products
-      return idsToDelete ? mongo.db.collection('products').updateMany({ brand_id: { $in: idsToDelete}}, { $set: { brand_id: null }}).then(() => idsToDelete) : null;
-    })
-    .then(idsToDelete => {
-      // 5. delete directories with images
-      if(idsToDelete) {
-        for(let brandId of idsToDelete) {
-          let deleteDir = path.resolve(settings.brandsUploadPath + '/' + brandId);
-          fse.remove(deleteDir, err => {});
-        }
-        return Promise.resolve(true);
-      } else {
-        return Promise.resolve(false);
-      }
-    });
+    const brandObjectID = new ObjectID(brandId);
+    const brand = await this.getSingleCustomer(brandId);
+    const deleteResponse = await mongo.db.collection('customers').deleteOne({'_id': brandObjectID});
+    await mongo.db.collection('products').updateMany({ brand_id: brandId}, { $set: { brand_id: null }});
+    return deleteResponse.deletedCount > 0;
   }
 
   getErrorMessage(err) {
@@ -130,7 +111,6 @@ class BrandsService {
 
   getValidDocumentForInsert(data, newPosition) {
       //  Allow empty brand to create draft
-
       let brand = {
         'date_created': new Date(),
         'date_updated': null,
@@ -143,7 +123,6 @@ class BrandsService {
       brand.meta_title = parse.getString(data.meta_title);
       brand.enabled = parse.getBooleanIfValid(data.enabled, true);
       brand.sort = parse.getString(data.sort);
-      brand.parent_id = parse.getObjectIDIfValid(data.parent_id);
       brand.position = parse.getNumberIfValid(data.position) || newPosition;
       brand.site_url = parse.getUrlIfValid(data.site_url);
       let slug = (!data.slug || data.slug.length === 0) ? data.name : data.slug;
@@ -232,10 +211,6 @@ class BrandsService {
     if(item) {
       item.id = item._id.toString();
       item._id = undefined;
-
-      if(item.parent_id) {
-        item.parent_id = item.parent_id.toString();
-      }
 
       if(item.slug) {
         item.url = url.resolve(domain, item.slug || '');
