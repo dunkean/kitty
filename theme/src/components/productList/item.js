@@ -22,6 +22,7 @@ const Item = ({product, addCartItem, settings, columnCountOnMobile, columnCountO
 
   const imageHeight = themeSettings.list_image_max_height && themeSettings.list_image_max_height > 0 ? themeSettings.list_image_max_height : 'auto';
   const placeholderHeight = themeSettings.list_image_max_height && themeSettings.list_image_max_height > 0 ? themeSettings.list_image_max_height : 200;
+  const packaging = product.packaging ? ' (' + product.packaging + ')' : '';
 
   return (
     <div className={`column is-${columnSizeOnMobile}-mobile is-${columnSizeOnTablet}-tablet is-${columnSizeOnDesktop}-desktop is-${columnSizeOnWidescreen}-widescreen is-${columnSizeOnFullhd}-fullhd ${product.stock_status}`}>
@@ -31,7 +32,7 @@ const Item = ({product, addCartItem, settings, columnCountOnMobile, columnCountO
           <ItemImage images={product.images} productName={product.name} height={placeholderHeight} />
         </figure>
         <div className="content product-caption">
-          <div className="product-name">{product.meta_title +' (' + product.packaging + ')'}</div>
+          <div className="product-name">{product.meta_title + packaging}</div>
           <ItemPrice product={product} settings={settings} />
         </div>
       </NavLink>

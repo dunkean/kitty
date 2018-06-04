@@ -99,9 +99,13 @@ class BrandsService {
       return Promise.reject('Invalid identifier');
     }
     const brandObjectID = new ObjectID(brandId);
-    const brand = await this.getSingleCustomer(brandId);
-    const deleteResponse = await mongo.db.collection('customers').deleteOne({'_id': brandObjectID});
+    const brand = await this.getSingleBrand(brandId);
+    const deleteResponse = await mongo.db.collection('brands').deleteOne({'_id': brandObjectID});
     await mongo.db.collection('products').updateMany({ brand_id: brandId}, { $set: { brand_id: null }});
+    if(deleteResponse.deletedCount > 0) {
+      let deleteDir = path.resolve(settings.brandsUploadPath + '/' + brandId);
+      fse.remove(deleteDir, err => {});
+    }
     return deleteResponse.deletedCount > 0;
   }
 
