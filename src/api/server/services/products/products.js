@@ -44,6 +44,9 @@ class ProductsService {
     }});
     itemsAggregation.push({ $project: {
       "categories.description": 0,
+      "categories.small_description": 0,
+      "categories.ingredients": 0,
+      "categories.feedingrecommandation": 0,
       "categories.meta_description": 0,
       "categories._id": 0,
       "categories.date_created": 0,
@@ -243,6 +246,7 @@ class ProductsService {
       category_ids: 1,
       brand_id: 1,
       related_product_ids: 1,
+      related_product_ids: 1,
       enabled: 1,
       discontinued: 1,
       date_created: 1,
@@ -260,6 +264,9 @@ class ProductsService {
       meta_title: 1,
       name: 1,
       description: 1,
+      small_description: 1,
+      ingredients: 1,
+      feedingrecommandation: 1,
       sku: 1,
       code: 1,
       tax_class: 1,
@@ -593,6 +600,9 @@ class ProductsService {
 
     product.name = parse.getString(data.name);
     product.description = parse.getString(data.description);
+    product.small_description = parse.getString(data.small_description);
+    product.ingredients = parse.getString(data.ingredients);
+    product.feedingrecommandation = parse.getString(data.feedingrecommandation);
     product.meta_description = parse.getString(data.meta_description);
     product.meta_title = parse.getString(data.meta_title);
     product.tags = parse.getArrayIfValid(data.tags) || [];
@@ -621,7 +631,7 @@ class ProductsService {
     product.stock_backorder = parse.getBooleanIfValid(data.stock_backorder, false);
     product.category_id = parse.getObjectIDIfValid(data.category_id);
     product.category_ids = parse.getArrayOfObjectID(data.category_ids);
-    product.brand_id = parse.getArrayOfObjectID(data.brand_id);
+    product.brand_id = parse.getObjectIDIfValid(data.brand_id);
     product.packaging = parse.getString(data.packaging);
 
     if(data.dimensions) {
@@ -648,8 +658,20 @@ class ProductsService {
       product.name = parse.getString(data.name);
     }
 
+    if(data.small_description !== undefined) {
+      product.small_description = parse.getString(data.small_description);
+    }
+
     if(data.description !== undefined) {
       product.description = parse.getString(data.description);
+    }
+
+    if(data.ingredients !== undefined) {
+      product.ingredients = parse.getString(data.ingredients);
+    }
+
+    if(data.feedingrecommandation !== undefined) {
+      product.feedingrecommandation = parse.getString(data.feedingrecommandation);
     }
 
     if(data.meta_description !== undefined) {
